@@ -67,6 +67,9 @@ func (p *planner) Select(n *parser.Select) (planNode, error) {
 	var ordering []int
 	if group != nil {
 		ordering = group.desiredOrdering
+		// TODO(pmattis): If there is a desired ordering, add an implicit "k IS NOT
+		// NULL" filter. Determine if the filter is exactly equivalent to the index
+		// constraint.
 	} else if sort != nil {
 		ordering, _ = sort.Ordering()
 	}
@@ -85,12 +88,12 @@ func (p *planner) Select(n *parser.Select) (planNode, error) {
 // selectIndex analyzes the scanNode to determine if there is an index
 // available that can fulfill the query with a more restrictive scan.
 //
-// The current occurs in two passes. The first pass performs a limited form of
-// value range propagation for the qvalues (i.e. the columns). The second pass
-// takes the value range information and determines which indexes can fulfill
-// the query (we currently only support covering indexes) and selects the
-// "best" index from that set. The cost model based on keys per row, key size
-// and number of index elements used.
+// Analysis currently consists of a simplification of the filter expression,
+// replacing expressions which are not usable by indexes by "true". The
+// simplified expression is then considered for each index and a set of range
+// constraints is created for the index. The candidate indexes are ranked using
+// these constraints and the best index is selected. The contraints are then
+// transformed into a set of spans to scan within the index.
 func (p *planner) selectIndex(s *scanNode, ordering []int) (planNode, error) {
 	if s.desc == nil || (s.filter == nil && ordering == nil) {
 		// No table or no where-clause and no ordering.
@@ -126,9 +129,9 @@ func (p *planner) selectIndex(s *scanNode, ordering []int) (planNode, error) {
 	if s.filter != nil {
 		// Analyze the filter expression, simplifying it and splitting it up into
 		// possibly overlapping ranges.
-		exprs := analyzeExpr(s.filter)
+		exprs, equivalent := analyzeExpr(s.filter)
 		if log.V(2) {
-			log.Infof("analyzeExpr: %s -> %s", s.filter, exprs)
+			log.Infof("analyzeExpr: %s -> %s [equivalent=%v]", s.filter, exprs, equivalent)
 		}
 
 		// Check to see if the filter simplified to a constant.
@@ -160,7 +163,7 @@ func (p *planner) selectIndex(s *scanNode, ordering []int) (planNode, error) {
 		// to scan. An examples of this is "a IN (1, 2, 3)".
 
 		for _, c := range candidates {
-			c.analyzeRanges(exprs)
+			c.analyzeExprs(exprs)
 		}
 	}
 
@@ -265,9 +268,9 @@ func (v *indexInfo) init(s *scanNode) {
 	}
 }
 
-// analyzeRanges examines the range map to determine the cost of using the
+// analyzeExprs examines the range map to determine the cost of using the
 // index.
-func (v *indexInfo) analyzeRanges(exprs []parser.Exprs) {
+func (v *indexInfo) analyzeExprs(exprs []parser.Exprs) {
 	v.makeConstraints(exprs)
 
 	// Count the number of elements used to limit the start and end keys. We then
@@ -324,7 +327,7 @@ func (v *indexInfo) analyzeOrdering(scan *scanNode, ordering []int) {
 // on the columns (a, b, c). For the expressions "a > 1 AND b > 2" we would
 // have the constraints:
 //
-//   {a: {start: > 1}
+//   {a: {start: > 1}}
 //
 // Why is there no constraint on "b"? Because the start constraint was > and
 // such a constraint does not allow us to consider further columns in the
@@ -343,6 +346,11 @@ func (v *indexInfo) makeConstraints(exprs []parser.Exprs) {
 	andExprs := exprs[0]
 	startDone := false
 	endDone := false
+
+	// TODO(pmattis): Keep track of whether all of the constraints are used. If
+	// all of the constraints are used and the expressions are equivalent to the
+	// original filter expression we can get rid of the filter expression and
+	// rely solely on the constraints.
 
 	for i := 0; i < len(v.index.ColumnIDs); i++ {
 		colID := v.index.ColumnIDs[i]

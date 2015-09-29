@@ -178,6 +178,13 @@ func (n *groupNode) wrap(plan planNode) planNode {
 	if n == nil {
 		return plan
 	}
+	// Check to see if the requested ordering is compatible with the existing
+	// ordering.
+	existingOrdering, prefix := plan.Ordering()
+	if log.V(2) {
+		log.Infof("Group: existing=%d (%d) desired=%d", existingOrdering, prefix, n.desiredOrdering)
+	}
+
 	n.plan = plan
 	n.needGroup = true
 	return n

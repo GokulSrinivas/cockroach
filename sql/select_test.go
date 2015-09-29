@@ -38,14 +38,14 @@ func makeTestIndex(t *testing.T, columns []string) (*TableDescriptor, *IndexDesc
 func makeConstraints(t *testing.T, sql string, desc *TableDescriptor,
 	index *IndexDescriptor) indexConstraints {
 	expr, _ := parseAndNormalizeExpr(t, sql)
-	exprs := analyzeExpr(expr)
+	exprs, _ := analyzeExpr(expr)
 
 	c := &indexInfo{
 		desc:     desc,
 		index:    index,
 		covering: true,
 	}
-	c.analyzeRanges(exprs)
+	c.analyzeExprs(exprs)
 	return c.constraints
 }
 
